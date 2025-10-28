@@ -1,22 +1,32 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include "AsyncTCP.h"
+#include <ESPmDNS.h> // NOVO: Inclui a biblioteca para nomes .local
+
 #define DebugSerial Serial1 // Define nosso "Serial de Debug" como sendo o Serial1
 
 // --- Configurações de Rede ---
-const char* ssid = "LESC";     // Coloque o nome da sua rede Wi-Fi aqui
-const char* password = "A33669608F"; // Coloque a senha da sua rede aqui
+const char* ssid = "LESC";
+// Coloque o nome da sua rede Wi-Fi aqui
+const char* password = "A33669608F";
+// Coloque a senha da sua rede aqui
+const char* mdns_name = "esp-pc"; // NOVO: O nome para acessar (http://esp-pc.local)
 
 // --- Configurações de Hardware ---
 // Pinos GPIO seguros para uso na ESP32-C3
-const int POWER_PIN = 4; // Conectado ao pino 1 (Ânodo) do optoacoplador de POWER
-const int RESET_PIN = 5; // Conectado ao pino 1 (Ânodo) do optoacoplador de RESET
+const int POWER_PIN = 5;
+// Conectado ao pino 1 (Ânodo) do optoacoplador de POWER
+const int RESET_PIN = 3;
+// Conectado ao pino 1 (Ânodo) do optoacoplador de RESET
 
-const int ESP_UART_TX_PIN = 21; // O pino que você especificou
-const int ESP_UART_RX_PIN = 20; // Um pino "placeholder", mesmo que não o usemos
+const int ESP_UART_TX_PIN = 21;
+// O pino que você especificou
+const int ESP_UART_RX_PIN = 20;
+// Um pino "placeholder", mesmo que não o usemos
 
 // Duração do pulso para simular o "pressionar" do botão
 const int PULSE_DURATION_MS = 300;
+const int SHUTDOWN_DURATION_MS = 4500; // NOVO: 4.5 segundos para forçar o desligamento
 
 // --- Configuração do LED de Status (Heartbeat) ---
 // Na maioria das placas ESP32-C3, o LED azul onboard está no GPIO 2.
@@ -27,10 +37,11 @@ unsigned long previousMillis = 0;
 const long interval = 1000; // Intervalo do blink (1 segundo)
 
 // --- Objetos do Servidor ---
-AsyncWebServer server(80); // Cria o objeto do servidor na porta 80 (HTTP)
+AsyncWebServer server(80);
+// Cria o objeto do servidor na porta 80 (HTTP)
 
 // --- Página HTML ---
-// (O HTML é idêntico ao da versão anterior)
+// HTML MODIFICADO
 const char* htmlPage = R"rawliteral(
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -61,7 +72,7 @@ const char* htmlPage = R"rawliteral(
             gap: 20px;
             width: 80%;
             max-width: 400px;
-        }
+        } 
         .button {
             display: block;
             padding: 25px 20px;
@@ -75,26 +86,34 @@ const char* htmlPage = R"rawliteral(
         }
         .button:active {
             transform: scale(0.98);
-            box-shadow: 0 2px 5px rgba(0,0,0,0.4);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.4); 
         }
         .power {
-            background-color: #4CAF50; /* Verde */
+            background-color: #4CAF50; /* Verde (Ligar) */
         }
         .power:hover {
             background-color: #45a049;
-        }
+        } 
         .reset {
-            background-color: #f44336; /* Vermelho */
+            background-color: #f44336; /* Vermelho (Reset) */ 
         }
         .reset:hover {
             background-color: #e53935;
+        } 
+        /* NOVO CSS PARA O BOTÃO DESLIGAR */
+        .shutdown {
+            background-color: #f57c00; /* Laranja */
+        }
+        .shutdown:hover {
+            background-color: #e65100;
         }
     </style>
 </head>
 <body>
     <h1>Controlador de PC</h1>
     <div class="container">
-        <a href="/power" class="button power">Ligar / Desligar PC</a>
+        <a href="/ligar" class="button power">Ligar PC</a>
+        <a href="/desligar" class="button shutdown">Desligar PC (Forçado)</a>
         <a href="/reset" class="button reset">Resetar PC</a>
     </div>
 </body>
@@ -123,8 +142,8 @@ void setup() {
 
     // Pino do LED de status
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH); // Começa desligado (HIGH = OFF)
-
+    digitalWrite(LED_PIN, HIGH);
+// Começa desligado (HIGH = OFF)
     // --- Conexão Wi-Fi ---
     WiFi.begin(ssid, password);
     Serial.print("Conectando ao Wi-Fi");
@@ -156,6 +175,22 @@ void setup() {
     DebugSerial.print("Endereço IP: ");
     DebugSerial.println(WiFi.localIP());
 
+    // --- NOVO: Configuração do mDNS ---
+    if (!MDNS.begin(mdns_name)) {
+        Serial.println("Erro ao configurar o mDNS!");
+        DebugSerial.println("Erro ao configurar o mDNS!");
+    } else {
+        Serial.print("mDNS iniciado. Acesse por http://");
+        Serial.print(mdns_name);
+        Serial.println(".local");
+        DebugSerial.print("mDNS iniciado. Acesse por http://");
+        DebugSerial.print(mdns_name);
+        DebugSerial.println(".local");
+        MDNS.addService("http", "tcp", 80);
+    }
+    // --- Fim da seção mDNS ---
+
+
     // --- Definição das Rotas do Servidor ---
 
     // Rota Raiz ("/") - Serve a página HTML principal
@@ -163,26 +198,41 @@ void setup() {
         request->send_P(200, "text/html", htmlPage);
     });
 
-    // Rota "/power" - Aciona o pulso de POWER
-    server.on("/power", HTTP_GET, [](AsyncWebServerRequest *request){
-        Serial.println("Comando POWER recebido!");
-        DebugSerial.println("Comando POWER recebido!");
+    // --- ROTAS MODIFICADAS ---
+
+    // Rota "/ligar" - Aciona o pulso de LIGAR (curto)
+    server.on("/ligar", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println("Comando LIGAR recebido!");
+        DebugSerial.println("Comando LIGAR recebido!");
         
         // Dá um feedback visual IMEDIATO no LED
         digitalWrite(LED_PIN, LOW); // Acende o LED
         
-        // Envia o pulso para o PC
+        // Envia o pulso CURTO
         digitalWrite(POWER_PIN, HIGH);
         delay(PULSE_DURATION_MS); // (delay aqui é aceitável, é muito curto)
         digitalWrite(POWER_PIN, LOW);
 
-        // Redireciona o navegador de volta para a página principal
         request->redirect("/");
-        
-        // O LED voltará ao seu estado normal (piscando) no próximo 'loop'
     });
 
-    // Rota "/reset" - Aciona o pulso de RESET
+    // Rota "/desligar" - Aciona o pulso de DESLIGAR (longo)
+    server.on("/desligar", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println("Comando DESLIGAR (FORÇADO) recebido!");
+        DebugSerial.println("Comando DESLIGAR (FORÇADO) recebido!");
+        
+        // Dá um feedback visual IMEDIATO no LED
+        digitalWrite(LED_PIN, LOW); // Acende o LED
+        
+        // Envia o pulso LONGO
+        digitalWrite(POWER_PIN, HIGH);
+        delay(SHUTDOWN_DURATION_MS); // Usa a nova constante de 4.5s
+        digitalWrite(POWER_PIN, LOW);
+
+        request->redirect("/");
+    });
+
+    // Rota "/reset" - Aciona o pulso de RESET (continua igual)
     server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request){
         Serial.println("Comando RESET recebido!");
         DebugSerial.println("Comando RESET recebido!");
@@ -195,11 +245,9 @@ void setup() {
         delay(PULSE_DURATION_MS);
         digitalWrite(RESET_PIN, LOW);
 
-        // Redireciona o navegador de volta para a página principal
         request->redirect("/");
-        
-        // O LED voltará ao seu estado normal (piscando) no próximo 'loop'
     });
+    // --- FIM DAS ROTAS MODIFICADAS ---
 
     // Rota "Não Encontrado" (404)
     server.onNotFound([](AsyncWebServerRequest *request){
@@ -215,7 +263,8 @@ void setup() {
     digitalWrite(LED_PIN, LOW); // ON
     delay(2000);
     digitalWrite(LED_PIN, HIGH); // OFF
-    previousMillis = millis(); // Reseta o timer do blink para o loop
+    previousMillis = millis();
+// Reseta o timer do blink para o loop
 }
 
 void loop() {
@@ -229,9 +278,9 @@ void loop() {
 
         // Inverte o estado do LED
         if (ledState == LOW) {
-            ledState = HIGH; // Desliga
+            ledState = HIGH; // Desliga [cite: 43]
         } else {
-            ledState = LOW;  // Liga
+            ledState = LOW;  // Liga [cite: 44]
         }
 
         // Atualiza o pino do LED
